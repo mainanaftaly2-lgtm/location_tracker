@@ -1,0 +1,206 @@
+<!doctype html>
+
+<!--
+Location Tracker — single-file HTML app
+Features:
+ - Live geolocation (Geolocation API)
+ - Map display using Leaflet + OpenStreetMap tiles
+ - Current position marker + accuracy circle
+ - Tracking trail (polyline) and history list
+ - Start / Stop tracking, tracking interval control
+ - Optionally POST location updates to a server endpoint
+ - Export recorded points as CSV
+
+How to use:
+ 1) Save this file as `location-tracker.html` and open in a modern browser (HTTPS recommended; geolocation often requires HTTPS or localhost).
+ 2) Click "Start tracking" and allow location permission.
+ 3) (Optional) If you want the site to send locations to a server, set the Server URL (e.g. http://localhost:3000/location) and enable "Send to server".
+
+Optional Node.js server (below) accepts POST /location JSON body and logs or stores points.
+
+--- Node.js server (save as server.js) ---
+// Run: npm init -y && npm i express body-parser
+// node server.js
+
+/*
+const express = require('express');
+const bodyParser = require('body-parser');
+const fs = require('fs');
+const app = express();
+app.use(bodyParser.json());
+const PORT = 3000;
+let store = [];
+app.post('/location', (req, res) => {
+  const payload = req.body; // expected {lat, lng, accuracy, timestamp, extra}
+  console.log('received', payload);
+  store.push(payload);
+  // optionally append to a file
+  fs.appendFileSync('locations.jsonl', JSON.stringify(payload) + '\n');
+  res.json({ok:true});
+});
+app.get('/locations', (req, res) => {
+  res.json(store);
+});
+app.listen(PORT, () => console.log('Server running on', PORT));
+*/
+
+--><html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Location Tracker</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-sA+e2mQGxV9p5b2e1VQbYhG4k6oV1Z5x1rYb8o0m0ow=" crossorigin=""/>
+  <style>
+    html,body,#map{height:100%;margin:0;padding:0}
+    body{font-family:Inter,system-ui,Segoe UI,Roboto,"Helvetica Neue",Arial;margin:0;display:flex;flex-direction:column;height:100vh}
+    #map{flex:1}
+    .panel{padding:12px;background:#fff;box-shadow:0 2px 8px rgba(0,0,0,0.08);display:flex;gap:8px;align-items:center}
+    .panel input[type=text]{width:320px}
+    .controls{display:flex;gap:8px;align-items:center}
+    .small{font-size:12px;color:#555}
+    #history{max-height:160px;overflow:auto;font-family:monospace;font-size:12px;padding:8px;background:#fafafa}
+    button{padding:8px 12px;border-radius:6px;border:1px solid #ddd;background:#fff;cursor:pointer}
+    button.primary{background:#0b74de;color:white;border-color:#0b74de}
+  </style>
+</head>
+<body>
+  <div class="panel">
+    <div class="controls">
+      <button id="startBtn" class="primary">Start tracking</button>
+      <button id="stopBtn">Stop</button>
+      <label class="small">Interval (s): <input id="intervalSec" type="number" value="5" min="1" style="width:70px"></label>
+      <label class="small">Send to server: <input id="sendServer" type="checkbox"></label>
+      <input id="serverUrl" type="text" placeholder="Server URL (e.g. http://localhost:3000/location)">
+      <button id="exportCsv">Export CSV</button>
+    </div>
+  </div>
+  <div id="map"></div>
+  <div class="panel" style="flex-direction:column;gap:6px">
+    <div style="width:100%;display:flex;justify-content:space-between;align-items:center">
+      <div class="small">Status: <span id="status">idle</span></div>
+      <div class="small">Points: <span id="count">0</span></div>
+    </div>
+    <div id="history" aria-live="polite">No points yet.</div>
+  </div>  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-p8d0QfQ6N3XKXhM0B4b3k2rYQh5v9g7r9+gqQvYf0uM=" crossorigin=""></script>  <script>
+    // Basic app state
+    const state = {
+      tracking: false,
+      watchId: null,
+      intervalHandle: null,
+      points: [],
+    };
+
+    // Initialize map
+    const map = L.map('map', {zoomControl:true}).setView([0,0], 2);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '© OpenStreetMap contributors'
+    }).addTo(map);
+
+    const markerLayer = L.layerGroup().addTo(map);
+    let trailPolyline = L.polyline([], {weight:4}).addTo(map);
+    let accuracyCircle = null;
+
+    const statusEl = document.getElementById('status');
+    const countEl = document.getElementById('count');
+    const historyEl = document.getElementById('history');
+
+    function setStatus(s){ statusEl.textContent = s; }
+
+    function addPoint(point){
+      state.points.push(point);
+      countEl.textContent = state.points.length;
+      updateHistory();
+
+      // map updates
+      markerLayer.clearLayers();
+      const last = point;
+      const m = L.marker([last.lat, last.lng]);
+      markerLayer.addLayer(m);
+      if(accuracyCircle) accuracyCircle.remove();
+      accuracyCircle = L.circle([last.lat, last.lng], {radius: last.accuracy || 0, opacity:0.25}).addTo(map);
+
+      trailPolyline.addLatLng([last.lat, last.lng]);
+      if(state.points.length === 1) map.setView([last.lat, last.lng], 15);
+    }
+
+    function updateHistory(){
+      if(state.points.length === 0){ historyEl.textContent = 'No points yet.'; return; }
+      let html = state.points.slice().reverse().map(p=>{
+        const t = new Date(p.timestamp).toLocaleString();
+        return `${t} — ${p.lat.toFixed(6)}, ${p.lng.toFixed(6)} (acc ${Math.round(p.accuracy)}m)`;
+      }).join('\n');
+      historyEl.textContent = html;
+    }
+
+    // request a single position
+    function captureOnce(){
+      if(!navigator.geolocation){ setStatus('Geolocation not supported'); return; }
+      setStatus('requesting position...');
+      navigator.geolocation.getCurrentPosition(pos => {
+        const coords = pos.coords;
+        const payload = {lat: coords.latitude, lng: coords.longitude, accuracy: coords.accuracy, timestamp: pos.timestamp};
+        addPoint(payload);
+        setStatus('last captured ' + new Date(payload.timestamp).toLocaleTimeString());
+        maybeSendToServer(payload);
+      }, err => {
+        setStatus('error: ' + err.message);
+      }, {enableHighAccuracy:true, maximumAge:3000});
+    }
+
+    // continuous tracking using watchPosition (optional). We will provide interval-based capture by default.
+    document.getElementById('startBtn').addEventListener('click', ()=>{
+      if(state.tracking) return;
+      state.tracking = true;
+      setStatus('tracking');
+      const sec = Math.max(1, parseInt(document.getElementById('intervalSec').value || '5'));
+      // do an immediate capture then interval
+      captureOnce();
+      state.intervalHandle = setInterval(captureOnce, sec*1000);
+    });
+
+    document.getElementById('stopBtn').addEventListener('click', ()=>{
+      if(!state.tracking) return;
+      state.tracking = false;
+      setStatus('stopped');
+      if(state.intervalHandle) { clearInterval(state.intervalHandle); state.intervalHandle = null; }
+    });
+
+    // Export CSV
+    document.getElementById('exportCsv').addEventListener('click', ()=>{
+      if(state.points.length === 0) return alert('No points to export');
+      const header = ['timestamp','lat','lng','accuracy'];
+      const rows = state.points.map(p => [new Date(p.timestamp).toISOString(), p.lat, p.lng, p.accuracy]);
+      const csv = [header.join(','), ...rows.map(r => r.join(','))].join('\n');
+      const blob = new Blob([csv], {type:'text/csv'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url; a.download = 'locations.csv'; a.click();
+      URL.revokeObjectURL(url);
+    });
+
+    // Send to server
+    async function maybeSendToServer(payload){
+      const enabled = document.getElementById('sendServer').checked;
+      const url = document.getElementById('serverUrl').value.trim();
+      if(!enabled || !url) return;
+      try{
+        await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+      }catch(e){ console.warn('send failed', e); }
+    }
+
+    // helpful fallback: center map on user's location when page loads
+    if(navigator.geolocation){
+      navigator.geolocation.getCurrentPosition(pos=>{
+        const c = pos.coords; map.setView([c.latitude,c.longitude], 13);
+      }, ()=>{}, {timeout:3000});
+    }
+
+    // expose some helpers for debugging in console
+    window.LocTrack = {
+      state,
+      start: ()=>document.getElementById('startBtn').click(),
+      stop: ()=>document.getElementById('stopBtn').click(),
+      export: ()=>document.getElementById('exportCsv').click(),
+    };
+  </script></body>
+</html>
