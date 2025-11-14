@@ -1,9 +1,39 @@
-<script> location tracker 
-  // Your configured backend URLs
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Location Tracker</title>
+  <!-- Leaflet CSS -->
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet/dist/leaflet.css"
+  />
+  <style>
+    #map { height: 100vh; width: 100%; }
+  </style>
+</head>
+<body>
+
+<div id="map"></div>
+
+<!-- Leaflet JS -->
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+
+<script>
+  // Your Replit backend URLs
   const SERVER_URL = "https://ebd6208e-3f5c-415f-9a2e-9606a3a0cd48-00-31gewkfu8l8o.kirk.replit.dev/track-location";
   const FETCH_URL = "https://ebd6208e-3f5c-415f-9a2e-9606a3a0cd48-00-31gewkfu8l8o.kirk.replit.dev/locations";
 
-  // Send location data to backend
+  // Initialize the map
+  const map = L.map('map').setView([0, 0], 2); // Center at 0,0 initially
+
+  // Add OpenStreetMap tiles
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; OpenStreetMap contributors'
+  }).addTo(map);
+
+  let markers = [];
+
+  // Send location to backend
   function sendLocation(lat, lng) {
     fetch(SERVER_URL, {
       method: "POST",
@@ -15,17 +45,16 @@
     .catch(err => console.error("Error sending location:", err));
   }
 
-  // Get current user location
+  // Track user location
   function trackUser() {
     if (!navigator.geolocation) {
-      console.error("Geolocation not supported by this browser.");
+      console.error("Geolocation not supported.");
       return;
     }
-
     navigator.geolocation.getCurrentPosition(
-      position => {
-        const lat = position.coords.latitude;
-        const lng = position.coords.longitude;
+      pos => {
+        const lat = pos.coords.latitude;
+        const lng = pos.coords.longitude;
         console.log("Current location:", { lat, lng });
         sendLocation(lat, lng);
       },
@@ -33,21 +62,42 @@
     );
   }
 
-  // Fetch all stored locations from backend
+  // Fetch all stored locations and plot them
   function fetchLocations() {
     fetch(FETCH_URL)
       .then(res => res.json())
-      .then(data => console.log("All stored locations:", data))
+      .then(data => {
+        console.log("All locations:", data);
+
+        // Remove old markers
+        markers.forEach(m => map.removeLayer(m));
+        markers = [];
+
+        // Add new markers
+        data.forEach(loc => {
+          const marker = L.marker([loc.lat, loc.lng])
+            .addTo(map)
+            .bindPopup(`Lat: ${loc.lat}, Lng: ${loc.lng}<br>${new Date(loc.timestamp).toLocaleString()}`);
+          markers.push(marker);
+        });
+
+        // Fit map to markers
+        if (markers.length > 0) {
+          const group = new L.featureGroup(markers);
+          map.fitBounds(group.getBounds().pad(0.2));
+        }
+      })
       .catch(err => console.error("Error fetching locations:", err));
   }
-
-  // Track user every 10 seconds
-  setInterval(trackUser, 10000);
-
-  // Fetch all locations every 30 seconds
-  setInterval(fetchLocations, 30000);
 
   // Initial calls
   trackUser();
   fetchLocations();
+
+  // Repeat periodically
+  setInterval(trackUser, 10000);     // Send location every 10 sec
+  setInterval(fetchLocations, 30000); // Fetch & update map every 30 sec
 </script>
+
+</body>
+</html>
